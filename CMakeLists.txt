@@ -14,6 +14,7 @@ include_directories(include)
 # Gather source files
 set(SOURCES
     src/VectorStorage.cpp
+    src/NSWGraph.cpp
     src/main.cpp
 )
 
