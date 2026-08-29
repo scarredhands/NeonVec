@@ -19,12 +19,10 @@ private:
     std::string wal_path;
     std::ofstream wal_writer;
     
-    // Background Threading for Graph Maintenance
     std::thread bg_worker;
     std::atomic<bool> stop_worker;
-    void maintenance_loop(); // The infinite loop the thread runs
+    void maintenance_loop(); 
 
-    // WAL uses OpCodes now: 0 = Insert, 1 = Delete
     void log_operation_to_disk(uint8_t op_code, size_t id); 
 
 public:
@@ -33,9 +31,11 @@ public:
 
     size_t insert(const std::vector<float>& vec);
     void delete_vector(size_t id);
-    
     std::vector<std::pair<float, size_t>> search(const std::vector<float>& query, size_t k) const;
-    void recover_from_wal();
+    
+    // NEW SNAPSHOT COMPACTION API
+    void save_snapshot();
+    void load_state(); // Instantly loads snapshot, then replays trailing WAL
 };
 
 #endif

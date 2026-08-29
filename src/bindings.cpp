@@ -1,28 +1,31 @@
 #include <pybind11/pybind11.h>
-#include <pybind11/stl.h> // Magic header: Auto-converts Python lists to std::vector
+#include <pybind11/stl.h> 
 #include "CoreEngine.h"
 
 namespace py = pybind11;
 
-// "neonvec" is the name of the module you will import in Python
 PYBIND11_MODULE(neonvec, m) {
     m.doc() = "NeonVec: High-performance HNSW vector database engine";
 
-    // Bind the CoreEngine class
     py::class_<CoreEngine>(m, "CoreEngine")
-        // Bind the constructor
+        // Constructor
         .def(py::init<size_t, size_t, const std::string&>(), 
              py::arg("dim"), py::arg("capacity"), py::arg("log_file"))
         
-        // Bind the core methods
+        // Core DB Operations
         .def("insert", &CoreEngine::insert, 
-             py::arg("vec"), 
-             "Insert a vector into the database")
-        .def("delete", &CoreEngine::delete_vector, py::arg("id"), "Soft delete a vector by ID") // <-- ADD THIS LINE
-        .def("search", &CoreEngine::search, 
-             py::arg("query"), py::arg("k"), 
-             "Search for k nearest neighbors")
+             py::arg("vec"), "Insert a vector into the database")
              
-        .def("recover_from_wal", &CoreEngine::recover_from_wal, 
-             "Load data from the physical disk log");
+        .def("delete", &CoreEngine::delete_vector, 
+             py::arg("id"), "Soft delete a vector by ID")
+             
+        .def("search", &CoreEngine::search, 
+             py::arg("query"), py::arg("k"), "Search for k nearest neighbors")
+             
+        // Snapshot & Compaction API
+        .def("save_snapshot", &CoreEngine::save_snapshot, 
+             "Save graph state and truncate WAL")
+             
+        .def("load_state", &CoreEngine::load_state, 
+             "Load snapshot and replay recent WAL"); // <-- Notice the semicolon is ONLY here!
 }

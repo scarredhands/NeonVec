@@ -70,28 +70,67 @@ std::vector<std::pair<float, size_t>> CoreEngine::search(const std::vector<float
     return results;
 }
 
-void CoreEngine::recover_from_wal() {
-    std::ifstream wal_reader(wal_path, std::ios::in | std::ios::binary);
-    if (!wal_reader.is_open()) return;
+// (Leave the Constructor, Destructor, insert, delete, search, and bg_worker exactly the same)
 
-    uint8_t op_code;
-    size_t id;
-    size_t dim = storage.get_dim();
-    std::vector<int8_t> compressed_vec(dim);
+// Paste this OVER your old `recover_from_wal()` method at the bottom of the file:
 
-    while (wal_reader.read(reinterpret_cast<char*>(&op_code), sizeof(uint8_t))) {
-        wal_reader.read(reinterpret_cast<char*>(&id), sizeof(size_t));
-        
-        if (op_code == 0) { // Replay Insert
-            wal_reader.read(reinterpret_cast<char*>(compressed_vec.data()), dim * sizeof(int8_t));
-            std::vector<float> float_reconstruction(dim);
-            for(size_t i = 0; i < dim; ++i) {
-                float_reconstruction[i] = static_cast<float>(compressed_vec[i]) / 127.0f;
-            }
-            storage.add_vector(float_reconstruction);
-            index.insert(id);
-        } else if (op_code == 1) { // Replay Delete
-            storage.mark_deleted(id);
-        }
+void CoreEngine::save_snapshot() {
+    std::unique_lock<std::shared_mutex> lock(rw_lock);
+    
+    std::string snap_path = wal_path + ".snapshot";
+    std::ofstream out(snap_path, std::ios::binary);
+    
+    storage.save(out);
+    index.save(out);
+    out.close();
+    
+    // WAL TRUNCATION: Wipe the WAL clean since the snapshot safely holds everything!
+    wal_writer.close();
+    wal_writer.open(wal_path, std::ios::out | std::ios::binary | std::ios::trunc);
+    std::cout << "[CoreEngine] Snapshot saved to disk. WAL truncated." << std::endl;
+}
+
+void CoreEngine::load_state() {
+    std::unique_lock<std::shared_mutex> lock(rw_lock);
+    
+    if (wal_writer.is_open()) wal_writer.close();
+    
+    // 1. Instantly load the memory dump if it exists
+    std::string snap_path = wal_path + ".snapshot";
+    std::ifstream snap_reader(snap_path, std::ios::binary);
+    if (snap_reader.is_open()) {
+        storage.load(snap_reader);
+        index.load(snap_reader);
+        snap_reader.close();
+        std::cout << "[CoreEngine] Snapshot loaded directly into RAM." << std::endl;
     }
+    
+    // 2. Replay only operations that occurred *after* the snapshot
+    std::ifstream wal_reader(wal_path, std::ios::binary);
+    if (wal_reader.is_open()) {
+        uint8_t op_code;
+        size_t id;
+        size_t dim = storage.get_dim();
+        std::vector<int8_t> compressed_vec(dim);
+
+        while (wal_reader.read(reinterpret_cast<char*>(&op_code), sizeof(uint8_t))) {
+            wal_reader.read(reinterpret_cast<char*>(&id), sizeof(size_t));
+            
+            if (op_code == 0) { 
+                wal_reader.read(reinterpret_cast<char*>(compressed_vec.data()), dim * sizeof(int8_t));
+                std::vector<float> float_reconstruction(dim);
+                for(size_t i = 0; i < dim; ++i) {
+                    float_reconstruction[i] = static_cast<float>(compressed_vec[i]) / 127.0f;
+                }
+                storage.add_vector(float_reconstruction);
+                index.insert(id);
+            } else if (op_code == 1) { 
+                storage.mark_deleted(id);
+            }
+        }
+        wal_reader.close();
+    }
+    
+    // Re-open WAL for appending future ops
+    wal_writer.open(wal_path, std::ios::app | std::ios::binary);
 }

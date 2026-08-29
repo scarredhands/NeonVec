@@ -7,7 +7,7 @@
 VectorStorage::VectorStorage(size_t dim, size_t capacity)
     : dim(dim), max_capacity(capacity), count(0) {
     data = new int8_t[max_capacity * dim];
-    tombstones.resize(max_capacity, 0); // Initialize all as 0 (active)
+    tombstones.resize(max_capacity, 0); 
 }
 
 VectorStorage::~VectorStorage() {
@@ -27,12 +27,12 @@ size_t VectorStorage::add_vector(const std::vector<float>& vec) {
     if (count >= max_capacity) throw std::runtime_error("Storage full");
     std::vector<int8_t> q_vec = quantize(vec);
     std::memcpy(data + (count * dim), q_vec.data(), dim * sizeof(int8_t));
-    tombstones[count] = 0; // Ensure it is marked active
+    tombstones[count] = 0; 
     return count++;
 }
 
 void VectorStorage::mark_deleted(size_t id) {
-    if (id < count) tombstones[id] = 1; // 1 = Deleted
+    if (id < count) tombstones[id] = 1; 
 }
 
 bool VectorStorage::is_deleted(size_t id) const {
@@ -46,4 +46,17 @@ float VectorStorage::compute_l2_sq(const int8_t* vec1, const int8_t* vec2, size_
         dist += diff * diff; 
     }
     return static_cast<float>(dist); 
+}
+
+// --- SNAPSHOT LOGIC ---
+void VectorStorage::save(std::ostream& out) const {
+    out.write(reinterpret_cast<const char*>(&count), sizeof(size_t));
+    out.write(reinterpret_cast<const char*>(data), count * dim * sizeof(int8_t));
+    out.write(reinterpret_cast<const char*>(tombstones.data()), count * sizeof(uint8_t));
+}
+
+void VectorStorage::load(std::istream& in) {
+    in.read(reinterpret_cast<char*>(&count), sizeof(size_t));
+    in.read(reinterpret_cast<char*>(data), count * dim * sizeof(int8_t));
+    in.read(reinterpret_cast<char*>(tombstones.data()), count * sizeof(uint8_t));
 }

@@ -164,3 +164,52 @@ void HNSWGraph::prune_tombstones() {
         }
     }
 }
+
+// ==========================================
+// SNAPSHOT MEMORY DUMP LOGIC
+// ==========================================
+void HNSWGraph::save(std::ostream& out) const {
+    out.write(reinterpret_cast<const char*>(&max_layer), sizeof(int));
+    out.write(reinterpret_cast<const char*>(&entry_point), sizeof(size_t));
+    
+    size_t nl_size = node_levels.size();
+    out.write(reinterpret_cast<const char*>(&nl_size), sizeof(size_t));
+    if (nl_size > 0) out.write(reinterpret_cast<const char*>(node_levels.data()), nl_size * sizeof(int));
+    
+    size_t g_layers = graph.size();
+    out.write(reinterpret_cast<const char*>(&g_layers), sizeof(size_t));
+    for (size_t l = 0; l < g_layers; ++l) {
+        size_t g_nodes = graph[l].size();
+        out.write(reinterpret_cast<const char*>(&g_nodes), sizeof(size_t));
+        for (size_t n = 0; n < g_nodes; ++n) {
+            size_t e_size = graph[l][n].size();
+            out.write(reinterpret_cast<const char*>(&e_size), sizeof(size_t));
+            if (e_size > 0) out.write(reinterpret_cast<const char*>(graph[l][n].data()), e_size * sizeof(size_t));
+        }
+    }
+}
+
+void HNSWGraph::load(std::istream& in) {
+    in.read(reinterpret_cast<char*>(&max_layer), sizeof(int));
+    in.read(reinterpret_cast<char*>(&entry_point), sizeof(size_t));
+    
+    size_t nl_size;
+    in.read(reinterpret_cast<char*>(&nl_size), sizeof(size_t));
+    node_levels.resize(nl_size);
+    if (nl_size > 0) in.read(reinterpret_cast<char*>(node_levels.data()), nl_size * sizeof(int));
+    
+    size_t g_layers;
+    in.read(reinterpret_cast<char*>(&g_layers), sizeof(size_t));
+    graph.resize(g_layers);
+    for (size_t l = 0; l < g_layers; ++l) {
+        size_t g_nodes;
+        in.read(reinterpret_cast<char*>(&g_nodes), sizeof(size_t));
+        graph[l].resize(g_nodes);
+        for (size_t n = 0; n < g_nodes; ++n) {
+            size_t e_size;
+            in.read(reinterpret_cast<char*>(&e_size), sizeof(size_t));
+            graph[l][n].resize(e_size);
+            if (e_size > 0) in.read(reinterpret_cast<char*>(graph[l][n].data()), e_size * sizeof(size_t));
+        }
+    }
+}
