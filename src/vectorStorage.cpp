@@ -1,118 +1,46 @@
-#include "vectorStorage.h"
-#include <arm_neon.h> // ARM SIMD hardware acceleration
-#include <cstdlib>
-#include <cassert>
-#include <queue>
-#include <algorithm>
+#include "VectorStorage.h"
+#include <cmath>
 #include <stdexcept>
+#include <cstring>
+#include <algorithm>
 
-// Task 1: 64-byte aligned memory allocation
-VectorStorage::VectorStorage(size_t dimension, size_t max_vectors) 
-    : dim(dimension), capacity(max_vectors), count(0) {
-    
-    // posix_memalign ensures the memory aligns perfectly with CPU cache lines
-    if (posix_memalign((void**)&data, 64, capacity * dim * sizeof(float)) != 0) {
-        throw std::bad_alloc();
-    }
+VectorStorage::VectorStorage(size_t dim, size_t capacity)
+    : dim(dim), max_capacity(capacity), count(0) {
+    // Allocate RAM for 8-bit integers
+    data = new int8_t[max_capacity * dim];
 }
 
 VectorStorage::~VectorStorage() {
-    free(data);
+    delete[] data;
+}
+
+std::vector<int8_t> VectorStorage::quantize(const std::vector<float>& vec) {
+    std::vector<int8_t> q_vec(vec.size());
+    for (size_t i = 0; i < vec.size(); ++i) {
+        // Clip values to [-1.0, 1.0] and scale to 8-bit integer [-127, 127]
+        float clipped = std::max(-1.0f, std::min(1.0f, vec[i]));
+        q_vec[i] = static_cast<int8_t>(clipped * 127.0f);
+    }
+    return q_vec;
 }
 
 size_t VectorStorage::add_vector(const std::vector<float>& vec) {
-    assert(vec.size() == dim && "Vector dimension mismatch!");
-    assert(count < capacity && "Storage capacity reached!");
+    if (count >= max_capacity) throw std::runtime_error("Storage full");
     
-    size_t id = count;
-    // Copy the vector into the contiguous flat buffer
+    // Quantize on ingestion
+    std::vector<int8_t> q_vec = quantize(vec);
+    
+    // Copy the compressed 8-bit data into the main memory block
+    std::memcpy(data + (count * dim), q_vec.data(), dim * sizeof(int8_t));
+    return count++;
+}
+
+float VectorStorage::compute_l2_sq(const int8_t* vec1, const int8_t* vec2, size_t dim) const {
+    int32_t dist = 0; 
     for (size_t i = 0; i < dim; ++i) {
-        data[id * dim + i] = vec[i];
+        int32_t diff = vec1[i] - vec2[i];
+        dist += diff * diff; // Integer multiplication is blazingly fast
     }
-    count++;
-    return id;
-}
-
-const float* VectorStorage::get_vector(size_t id) const {
-    return &data[id * dim];
-}
-
-size_t VectorStorage::get_count() const { return count; }
-size_t VectorStorage::get_dim() const { return dim; }
-
-// Task 2: SIMD Distance Kernels 
-float VectorStorage::compute_l2_neon(const float* a, const float* b, size_t dim) {
-    float32x4_t sum_vec = vdupq_n_f32(0.0f);
-    size_t i = 0;
-    
-    // Process 4 floats per cycle
-    for (; i + 3 < dim; i += 4) {
-        float32x4_t va = vld1q_f32(a + i);
-        float32x4_t vb = vld1q_f32(b + i);
-        float32x4_t diff = vsubq_f32(va, vb);
-        sum_vec = vmlaq_f32(sum_vec, diff, diff); // sum += diff * diff
-    }
-    
-    // Extract SIMD results back to scalar
-    float result[4];
-    vst1q_f32(result, sum_vec);
-    float total_distance = result[0] + result[1] + result[2] + result[3];
-    
-    // Handle remainder if dim is not a multiple of 4
-    for (; i < dim; ++i) {
-        float diff = a[i] - b[i];
-        total_distance += diff * diff;
-    }
-    
-    return total_distance;
-}
-
-float VectorStorage::compute_dot_neon(const float* a, const float* b, size_t dim) {
-    float32x4_t sum_vec = vdupq_n_f32(0.0f);
-    size_t i = 0;
-    
-    for (; i + 3 < dim; i += 4) {
-        float32x4_t va = vld1q_f32(a + i);
-        float32x4_t vb = vld1q_f32(b + i);
-        sum_vec = vmlaq_f32(sum_vec, va, vb);
-    }
-    
-    float result[4];
-    vst1q_f32(result, sum_vec);
-    float total = result[0] + result[1] + result[2] + result[3];
-    
-    for (; i < dim; ++i) {
-        total += a[i] * b[i];
-    }
-    return total;
-}
-
-// Task 3: Flat Baseline (Brute-force k-NN Search)
-std::vector<std::pair<float, size_t>> VectorStorage::search_knn(const std::vector<float>& query, int k) const {
-    assert(query.size() == dim && "Query dimension mismatch!");
-    
-    // Max-heap to keep track of the closest 'k' vectors
-    std::priority_queue<std::pair<float, size_t>> max_heap; 
-    
-    const float* q_ptr = query.data();
-
-    for (size_t i = 0; i < count; ++i) {
-        float dist = compute_l2_neon(q_ptr, get_vector(i), dim);
-        
-        if (max_heap.size() < (size_t)k) {
-            max_heap.push({dist, i});
-        } else if (dist < max_heap.top().first) {
-            max_heap.pop();
-            max_heap.push({dist, i});
-        }
-    }
-    
-    // Extract from heap and reverse to get smallest distance first
-    std::vector<std::pair<float, size_t>> results;
-    while (!max_heap.empty()) {
-        results.push_back(max_heap.top());
-        max_heap.pop();
-    }
-    std::reverse(results.begin(), results.end());
-    return results;
+    // Return as float because HNSW priority queues expect float distances
+    return static_cast<float>(dist); 
 }

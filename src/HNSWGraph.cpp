@@ -18,14 +18,14 @@ int HNSWGraph::get_random_level() {
 }
 
 std::vector<std::pair<float, size_t>> HNSWGraph::search_layer(
-    const std::vector<float>& query, size_t ep, size_t ef, int layer) const {
+    const std::vector<int8_t>& query, size_t ep, size_t ef, int layer) const {
     
     std::priority_queue<std::pair<float, size_t>, std::vector<std::pair<float, size_t>>, std::greater<>> candidates;
     std::priority_queue<std::pair<float, size_t>> top_results;
     std::unordered_set<size_t> visited;
 
-    const float* q_ptr = query.data();
-    float entry_dist = storage.compute_l2_neon(q_ptr, storage.get_vector(ep), storage.get_dim());
+    const int8_t* q_ptr = query.data();
+    float entry_dist = storage.compute_l2_sq(q_ptr, storage.get_vector(ep), storage.get_dim());
     
     candidates.push({entry_dist, ep});
     top_results.push({entry_dist, ep});
@@ -41,7 +41,7 @@ std::vector<std::pair<float, size_t>> HNSWGraph::search_layer(
         for (size_t neighbor_id : graph[layer][current.second]) {
             if (visited.find(neighbor_id) == visited.end()) {
                 visited.insert(neighbor_id);
-                float dist = storage.compute_l2_neon(q_ptr, storage.get_vector(neighbor_id), storage.get_dim());
+                float dist = storage.compute_l2_sq(q_ptr, storage.get_vector(neighbor_id), storage.get_dim());
                 
                 if (top_results.size() < ef || dist < top_results.top().first) {
                     candidates.push({dist, neighbor_id});
@@ -63,6 +63,10 @@ std::vector<std::pair<float, size_t>> HNSWGraph::search_layer(
 
 void HNSWGraph::insert(size_t new_vid) {
     int new_level = get_random_level();
+    
+    // Grab the 8-bit vector that was just saved in VectorStorage
+    const int8_t* raw_vec = storage.get_vector(new_vid);
+    std::vector<int8_t> query(raw_vec, raw_vec + storage.get_dim());
     
     // Expand tracking structures if this is a new vector
     if (new_vid >= node_levels.size()) {
@@ -88,8 +92,7 @@ void HNSWGraph::insert(size_t new_vid) {
         return;
     }
 
-    const float* raw_vec = storage.get_vector(new_vid);
-    std::vector<float> query(raw_vec, raw_vec + storage.get_dim());
+    // (The redundant float definitions that were crashing the compiler have been removed from here)
     
     size_t curr_ep = entry_point;
     
@@ -127,11 +130,14 @@ void HNSWGraph::insert(size_t new_vid) {
     }
 }
 
+// Renamed the parameter to 'query_float' so it doesn't clash with the 8-bit 'query'
 std::vector<std::pair<float, size_t>> HNSWGraph::search_ann(
-    const std::vector<float>& query, size_t k, size_t ef_search) const {
+    const std::vector<float>& query_float, size_t k, size_t ef_search) const {
     
     if (max_layer == -1) return {};
-
+    
+    // Quantize the incoming Python float vector into an 8-bit integer vector for fast routing
+    std::vector<int8_t> query = VectorStorage::quantize(query_float);
     size_t curr_ep = entry_point;
 
     // Fast routing down to layer 1
