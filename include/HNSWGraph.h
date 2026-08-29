@@ -27,7 +27,6 @@ private:
 
     int get_random_level();
     
-    // UPDATED: Now uses int8_t for incredibly fast routing
     std::vector<std::pair<float, size_t>> search_layer(
         const std::vector<int8_t>& query, size_t ep, size_t ef, int layer) const;
 
@@ -36,9 +35,11 @@ public:
     
     void insert(size_t new_vid);
     
-    // UPDATED: Parameter explicitly named query_float to prevent collisions
     std::vector<std::pair<float, size_t>> search_ann(
         const std::vector<float>& query_float, size_t k, size_t ef_search) const;
+        
+    // ADDED: The garbage collection function for the background thread
+    void prune_tombstones();
 };
 
 #endif

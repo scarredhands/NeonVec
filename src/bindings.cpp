@@ -18,7 +18,7 @@ PYBIND11_MODULE(neonvec, m) {
         .def("insert", &CoreEngine::insert, 
              py::arg("vec"), 
              "Insert a vector into the database")
-             
+        .def("delete", &CoreEngine::delete_vector, py::arg("id"), "Soft delete a vector by ID") // <-- ADD THIS LINE
         .def("search", &CoreEngine::search, 
              py::arg("query"), py::arg("k"), 
              "Search for k nearest neighbors")

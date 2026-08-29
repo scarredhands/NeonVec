@@ -7,31 +7,34 @@
 #include <string>
 #include <fstream>
 #include <vector>
+#include <thread>
+#include <atomic>
 
 class CoreEngine {
 private:
     VectorStorage storage;
     HNSWGraph index;
-    
-    // Concurrency control for thread-safe operations
     mutable std::shared_mutex rw_lock;
 
-    // Disk Durability (Write-Ahead Log)
     std::string wal_path;
     std::ofstream wal_writer;
     
-    // UPDATED: Now only requires the ID, because it fetches the 8-bit vector internally
-    void log_insert_to_disk(size_t id); 
+    // Background Threading for Graph Maintenance
+    std::thread bg_worker;
+    std::atomic<bool> stop_worker;
+    void maintenance_loop(); // The infinite loop the thread runs
+
+    // WAL uses OpCodes now: 0 = Insert, 1 = Delete
+    void log_operation_to_disk(uint8_t op_code, size_t id); 
 
 public:
     CoreEngine(size_t dim, size_t capacity, const std::string& log_file);
     ~CoreEngine();
 
-    // Core Database Operations
     size_t insert(const std::vector<float>& vec);
+    void delete_vector(size_t id);
+    
     std::vector<std::pair<float, size_t>> search(const std::vector<float>& query, size_t k) const;
-
-    // Crash Recovery
     void recover_from_wal();
 };
 

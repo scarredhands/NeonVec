@@ -1,92 +1,97 @@
 #include "CoreEngine.h"
 #include <iostream>
-#include <stdexcept>
+#include <chrono>
 
-// Initialize HNSW with dense parameters: M = 32, ef_construction = 200
 CoreEngine::CoreEngine(size_t dim, size_t capacity, const std::string& log_file)
-    : storage(dim, capacity), index(storage, 32, 200), wal_path(log_file) {
+    : storage(dim, capacity), index(storage, 32, 200), wal_path(log_file), stop_worker(false) {
     
-    // Open the WAL file in Append mode and Binary mode
     wal_writer.open(wal_path, std::ios::app | std::ios::binary);
-    if (!wal_writer.is_open()) {
-        throw std::runtime_error("Failed to open Write-Ahead Log.");
-    }
+    
+    // Launch the background thread!
+    bg_worker = std::thread(&CoreEngine::maintenance_loop, this);
 }
 
 CoreEngine::~CoreEngine() {
+    // 1. Tell the background thread to stop
+    stop_worker = true;
+    
+    // 2. Wait for it to finish its current loop before destroying memory (CRITICAL)
+    if (bg_worker.joinable()) {
+        bg_worker.join();
+    }
     if (wal_writer.is_open()) {
         wal_writer.close();
     }
 }
 
-void CoreEngine::log_insert_to_disk(size_t id) {
-    // 1. Write the Vector ID (8 bytes)
+// THE BACKGROUND THREAD
+void CoreEngine::maintenance_loop() {
+    while (!stop_worker) {
+        // Sleep for 10 seconds, then wake up and prune the graph
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+        
+        // Grab a UNIQUE lock because we are physically altering graph edges
+        std::unique_lock<std::shared_mutex> lock(rw_lock);
+        index.prune_tombstones();
+    }
+}
+
+void CoreEngine::log_operation_to_disk(uint8_t op_code, size_t id) {
+    wal_writer.write(reinterpret_cast<const char*>(&op_code), sizeof(uint8_t));
     wal_writer.write(reinterpret_cast<const char*>(&id), sizeof(size_t));
     
-    // 2. Write the compressed 8-bit int data directly from RAM to SSD (dim * 1 byte)
-    const int8_t* compressed_vec = storage.get_vector(id);
-    wal_writer.write(reinterpret_cast<const char*>(compressed_vec), storage.get_dim() * sizeof(int8_t));
-    
-    // 3. Force the OS to write to physical disk immediately
+    if (op_code == 0) { // If it's an insert, write the 8-bit vector payload too
+        const int8_t* compressed_vec = storage.get_vector(id);
+        wal_writer.write(reinterpret_cast<const char*>(compressed_vec), storage.get_dim() * sizeof(int8_t));
+    }
     wal_writer.flush(); 
 }
 
 size_t CoreEngine::insert(const std::vector<float>& vec) {
-    // UNIQUE LOCK: Blocks all other readers and writers while modifying the DB
     std::unique_lock<std::shared_mutex> lock(rw_lock);
-    
     size_t id = storage.add_vector(vec);
     index.insert(id);
-    
-    log_insert_to_disk(id);
-    
+    log_operation_to_disk(0, id); // OpCode 0 = Insert
     return id;
 }
 
+void CoreEngine::delete_vector(size_t id) {
+    std::unique_lock<std::shared_mutex> lock(rw_lock);
+    storage.mark_deleted(id);
+    log_operation_to_disk(1, id); // OpCode 1 = Delete
+}
+
 std::vector<std::pair<float, size_t>> CoreEngine::search(const std::vector<float>& query, size_t k) const {
-    // SHARED LOCK: Allows multiple concurrent searches, but blocks any new inserts
     std::shared_lock<std::shared_mutex> lock(rw_lock);
+    if (storage.get_count() == 0) return {};
     
-    if (storage.get_count() == 0) {
-        return {};
-    }
-    
-    // Pass query through HNSW (ef_search = 100 for high recall)
     auto results = index.search_ann(query, k, 100);
-    
-    // Slice results to match requested 'k' precisely
-    if (results.size() > k) {
-        results.resize(k);
-    }
-    
+    if (results.size() > k) results.resize(k);
     return results;
 }
 
 void CoreEngine::recover_from_wal() {
-    // Open file in Read mode and Binary mode
     std::ifstream wal_reader(wal_path, std::ios::in | std::ios::binary);
     if (!wal_reader.is_open()) return;
 
+    uint8_t op_code;
     size_t id;
     size_t dim = storage.get_dim();
     std::vector<int8_t> compressed_vec(dim);
-    size_t recovered_count = 0;
 
-    // Read sequentially until the end of the file
-    while (wal_reader.read(reinterpret_cast<char*>(&id), sizeof(size_t))) {
-        wal_reader.read(reinterpret_cast<char*>(compressed_vec.data()), dim * sizeof(int8_t));
+    while (wal_reader.read(reinterpret_cast<char*>(&op_code), sizeof(uint8_t))) {
+        wal_reader.read(reinterpret_cast<char*>(&id), sizeof(size_t));
         
-        // Re-insert into storage and graph indexing layers
-        // (Note: To optimize recovery further, you can add an internal add_compressed_vector method to VectorStorage)
-        std::vector<float> float_reconstruction(dim);
-        for(size_t i = 0; i < dim; ++i) {
-            float_reconstruction[i] = static_cast<float>(compressed_vec[i]) / 127.0f;
+        if (op_code == 0) { // Replay Insert
+            wal_reader.read(reinterpret_cast<char*>(compressed_vec.data()), dim * sizeof(int8_t));
+            std::vector<float> float_reconstruction(dim);
+            for(size_t i = 0; i < dim; ++i) {
+                float_reconstruction[i] = static_cast<float>(compressed_vec[i]) / 127.0f;
+            }
+            storage.add_vector(float_reconstruction);
+            index.insert(id);
+        } else if (op_code == 1) { // Replay Delete
+            storage.mark_deleted(id);
         }
-        
-        storage.add_vector(float_reconstruction);
-        index.insert(id);
-        recovered_count++;
     }
-    
-    std::cout << "Recovered " << recovered_count << " vectors from WAL." << std::endl;
 }
